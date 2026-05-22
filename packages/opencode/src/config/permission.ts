@@ -1,27 +1,18 @@
 export * as ConfigPermission from "./permission"
 import { Schema, SchemaGetter } from "effect"
-import z from "zod"
-import { ZodOverride, zod } from "@/util/effect-zod"
-import { withStatics } from "@/util/schema"
 
-export const Action = Schema.Literals(["ask", "allow", "deny"])
-  .annotate({ identifier: "PermissionActionConfig" })
-  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export const Action = Schema.Literals(["ask", "allow", "deny"]).annotate({ identifier: "PermissionActionConfig" })
 export type Action = Schema.Schema.Type<typeof Action>
 
-export const Object = Schema.Record(Schema.String, Action)
-  .annotate({ identifier: "PermissionObjectConfig" })
-  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export const Object = Schema.Record(Schema.String, Action).annotate({ identifier: "PermissionObjectConfig" })
 export type Object = Schema.Schema.Type<typeof Object>
 
-export const Rule = Schema.Union([Action, Object])
-  .annotate({ identifier: "PermissionRuleConfig" })
-  .pipe(withStatics((s) => ({ zod: zod(s) })))
+export const Rule = Schema.Union([Action, Object]).annotate({ identifier: "PermissionRuleConfig" })
 export type Rule = Schema.Schema.Type<typeof Rule>
 
 // Known permission keys get explicit types in the Effect schema for generated
-// docs/types. Runtime config parsing uses `InfoZod` below so user key order is
-// preserved for permission precedence.
+// docs/types. Runtime config parsing uses Effect's `propertyOrder: "original"`
+// parse option so user key order is preserved for permission precedence.
 const InputObject = Schema.StructWithRest(
   Schema.Struct({
     read: Schema.optional(Rule),
@@ -36,7 +27,8 @@ const InputObject = Schema.StructWithRest(
     question: Schema.optional(Action),
     webfetch: Schema.optional(Action),
     websearch: Schema.optional(Action),
-    codesearch: Schema.optional(Action),
+    repo_clone: Schema.optional(Rule),
+    repo_overview: Schema.optional(Rule),
     lsp: Schema.optional(Rule),
     doom_loop: Schema.optional(Action),
     skill: Schema.optional(Rule),
@@ -53,35 +45,6 @@ const InputSchema = Schema.Union([Action, InputObject])
 const normalizeInput = (input: Schema.Schema.Type<typeof InputSchema>): Schema.Schema.Type<typeof InputObject> =>
   typeof input === "string" ? { "*": input } : input
 
-const InfoZod = z
-  .union([
-    zod(Action),
-    z.intersection(
-      z.record(z.string(), zod(Rule)),
-      z
-        .object({
-          read: zod(Rule).optional(),
-          edit: zod(Rule).optional(),
-          glob: zod(Rule).optional(),
-          grep: zod(Rule).optional(),
-          list: zod(Rule).optional(),
-          bash: zod(Rule).optional(),
-          task: zod(Rule).optional(),
-          external_directory: zod(Rule).optional(),
-          todowrite: zod(Action).optional(),
-          question: zod(Action).optional(),
-          webfetch: zod(Action).optional(),
-          websearch: zod(Action).optional(),
-          codesearch: zod(Action).optional(),
-          lsp: zod(Rule).optional(),
-          doom_loop: zod(Action).optional(),
-          skill: zod(Rule).optional(),
-        })
-        .catchall(zod(Rule)),
-    ),
-  ])
-  .transform(normalizeInput)
-
 export const Info = InputSchema.pipe(
   Schema.decodeTo(InputObject, {
     decode: SchemaGetter.transform(normalizeInput),
@@ -90,13 +53,6 @@ export const Info = InputSchema.pipe(
     // of the same rules.
     encode: SchemaGetter.passthrough({ strict: false }),
   }),
-)
-  .annotate({ identifier: "PermissionConfig" })
-  .annotate({ [ZodOverride]: InfoZod })
-  .pipe(
-    // Walker already emits the decodeTo transform into the derived zod (see
-    // `encoded()` in effect-zod.ts), so just expose that directly.
-    withStatics((s) => ({ zod: zod(s) })),
-  )
+).annotate({ identifier: "PermissionConfig" })
 type _Info = Schema.Schema.Type<typeof InputObject>
 export type Info = { -readonly [K in keyof _Info]: _Info[K] }

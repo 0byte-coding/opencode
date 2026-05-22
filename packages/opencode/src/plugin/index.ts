@@ -3,28 +3,31 @@ import type {
   PluginInput,
   Plugin as PluginInstance,
   PluginModule,
-  WorkspaceAdaptor as PluginWorkspaceAdaptor,
+  WorkspaceAdapter as PluginWorkspaceAdapter,
 } from "@opencode-ai/plugin"
-import { Config } from "../config"
+import { Config } from "@/config/config"
 import { Bus } from "../bus"
-import { Log } from "../util"
+import * as Log from "@opencode-ai/core/util/log"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { Flag } from "../flag/flag"
+import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./codex"
-import { Session } from "../session"
+import { Session } from "@/session/session"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
 import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
 import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
+import { AzureAuthPlugin } from "./azure"
+import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { Effect, Layer, Context, Stream } from "effect"
-import { EffectBridge } from "@/effect"
-import { InstanceState } from "@/effect"
+import { EffectBridge } from "@/effect/bridge"
+import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
-import { registerAdaptor } from "@/control-plane/adaptors"
-import type { WorkspaceAdaptor } from "@/control-plane/types"
+import { registerAdapter } from "@/control-plane/adapters"
+import type { WorkspaceAdapter } from "@/control-plane/types"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "plugin" })
 
@@ -64,6 +67,8 @@ const INTERNAL_PLUGINS: PluginInstance[] = [
   PoeAuthPlugin,
   CloudflareWorkersAuthPlugin,
   CloudflareAIGatewayAuthPlugin,
+  AzureAuthPlugin,
+  DigitalOceanAuthPlugin,
 ]
 
 function isServerPlugin(value: unknown): value is PluginInstance {
@@ -110,6 +115,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const config = yield* Config.Service
+    const flags = yield* RuntimeFlags.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
@@ -126,12 +132,8 @@ export const layer = Layer.effect(
         const client = createOpencodeClient({
           baseUrl: "http://localhost:4096",
           directory: ctx.directory,
-          headers: Flag.OPENCODE_SERVER_PASSWORD
-            ? {
-                Authorization: `Basic ${Buffer.from(`${Flag.OPENCODE_SERVER_USERNAME ?? "opencode"}:${Flag.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
-              }
-            : undefined,
-          fetch: async (...args) => (await Server.Default()).app.fetch(...args),
+          headers: ServerAuth.headers(),
+          fetch: async (...args) => Server.Default().app.fetch(...args),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
@@ -140,8 +142,8 @@ export const layer = Layer.effect(
           worktree: ctx.worktree,
           directory: ctx.directory,
           experimental_workspace: {
-            register(type: string, adaptor: PluginWorkspaceAdaptor) {
-              registerAdaptor(ctx.project.id, type, adaptor as WorkspaceAdaptor)
+            register(type: string, adapter: PluginWorkspaceAdapter) {
+              registerAdapter(ctx.project.id, type, adapter as WorkspaceAdapter)
             },
           },
           get serverUrl(): URL {
@@ -151,7 +153,7 @@ export const layer = Layer.effect(
           $: typeof Bun === "undefined" ? undefined : Bun.$,
         }
 
-        for (const plugin of INTERNAL_PLUGINS) {
+        for (const plugin of flags.disableDefaultPlugins ? [] : INTERNAL_PLUGINS) {
           log.info("loading internal plugin", { name: plugin.name })
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
@@ -162,8 +164,8 @@ export const layer = Layer.effect(
           if (init._tag === "Some") hooks.push(init.value)
         }
 
-        const plugins = Flag.OPENCODE_PURE ? [] : (cfg.plugin_origins ?? [])
-        if (Flag.OPENCODE_PURE && cfg.plugin_origins?.length) {
+        const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
+        if (flags.pure && cfg.plugin_origins?.length) {
           log.info("skipping external plugins in pure mode", { count: cfg.plugin_origins.length })
         }
         if (plugins.length) yield* config.waitForDependencies()
@@ -293,7 +295,8 @@ export const layer = Layer.effect(
 
     const waitForPendingEvents = Effect.fn("Plugin.waitForPendingEvents")(function* (timeoutMs?: number) {
       const s = yield* InstanceState.get(state)
-      const timeout = timeoutMs ?? Flag.OPENCODE_EXPERIMENTAL_PLUGIN_EXIT_DEFAULT_TIMEOUT_MS ?? 60000
+      const envTimeout = Number(process.env["OPENCODE_EXPERIMENTAL_PLUGIN_EXIT_DEFAULT_TIMEOUT_MS"])
+      const timeout = timeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 60000)
 
       yield* Effect.tryPromise({
         try: async () => {
@@ -322,6 +325,10 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer), Layer.provide(Config.defaultLayer))
+export const defaultLayer = layer.pipe(
+  Layer.provide(Bus.layer),
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(RuntimeFlags.defaultLayer),
+)
 
 export * as Plugin from "."
