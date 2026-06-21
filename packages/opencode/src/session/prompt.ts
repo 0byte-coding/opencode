@@ -1143,6 +1143,13 @@ export const layer = Layer.effect(
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
+        // NOTE: Seed the frozen map from the DB on first entry for this session
+        // so a restarted process reuses the system prompt that was active when
+        // the session was first used, preserving the provider's KV cache.
+        if (!frozenSystemPrompts.has(sessionID) && session.system_prompt) {
+          frozenSystemPrompts.set(sessionID, [...session.system_prompt])
+        }
+
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
@@ -1317,10 +1324,15 @@ export const layer = Layer.effect(
                 const cached = frozenSystemPrompts.get(sessionID)
                 if (cached) return Effect.succeed(cached)
                 return Effect.all([sys.environment(model), instruction.system().pipe(Effect.orDie)]).pipe(
-                  Effect.map(([env, instructions]) => {
+                  Effect.flatMap(([env, instructions]) => {
                     const computed = [...env, ...instructions]
                     frozenSystemPrompts.set(sessionID, computed)
-                    return computed
+                    // NOTE: Persist to DB so a restarted process can reload the
+                    // frozen prompt rather than recomputing from current disk state,
+                    // which may have changed since the session started.
+                    return sessions.setSystemPrompt({ sessionID, system_prompt: computed }).pipe(
+                      Effect.map(() => computed),
+                    )
                   }),
                 )
               }),

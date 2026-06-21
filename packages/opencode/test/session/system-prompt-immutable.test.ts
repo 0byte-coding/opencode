@@ -588,7 +588,7 @@ it.instance(
       // Currently FAILS: no system_prompt field exists on Session.Info.
       const saved = yield* sessions.get(chat.id).pipe(Effect.orDie)
       expect((saved as any).system_prompt).toBeDefined()
-      expect((saved as any).system_prompt).toContain("always use semicolons")
+      expect(JSON.stringify((saved as any).system_prompt)).toContain("always use semicolons")
     }),
   { config: {} },
   15_000,

@@ -567,6 +567,7 @@ export const SessionInfo = Schema.Struct({
   }),
   permission: optionalOmitUndefined(PermissionV1.Ruleset),
   revert: optionalOmitUndefined(SessionRevert),
+  system_prompt: optionalOmitUndefined(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 

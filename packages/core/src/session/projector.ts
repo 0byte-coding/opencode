@@ -69,6 +69,7 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     tokens_cache_write: (info.tokens ?? { cache: { write: 0 } }).cache.write,
     revert: info.revert ?? null,
     permission: info.permission ? [...info.permission] : undefined,
+    system_prompt: info.system_prompt ? [...info.system_prompt] : undefined,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,

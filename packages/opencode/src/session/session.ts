@@ -104,6 +104,7 @@ export function fromRow(row: SessionRow): Info {
     metadata: row.metadata ?? undefined,
     revert,
     permission: row.permission ? [...row.permission] : undefined,
+    system_prompt: row.system_prompt ? [...row.system_prompt] : undefined,
     time: {
       created: row.time_created,
       updated: row.time_updated,
@@ -140,6 +141,7 @@ export function toRow(info: Info) {
     tokens_cache_write: (info.tokens ?? EmptyTokens).cache.write,
     revert: info.revert ?? null,
     permission: info.permission,
+    system_prompt: info.system_prompt,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
@@ -230,6 +232,7 @@ export const Info = Schema.Struct({
   time: Time,
   permission: optionalOmitUndefined(PermissionV1.Ruleset),
   revert: optionalOmitUndefined(Revert),
+  system_prompt: optionalOmitUndefined(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -486,6 +489,7 @@ export interface Interface {
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly setShare: (input: { sessionID: SessionID; share: Info["share"] }) => Effect.Effect<void>
   readonly setWorkspace: (input: { sessionID: SessionID; workspaceID: Info["workspaceID"] }) => Effect.Effect<void>
+  readonly setSystemPrompt: (input: { sessionID: SessionID; system_prompt: string[] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<SessionV1.WithParts[], NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
@@ -849,6 +853,13 @@ export const layer: Layer.Layer<
       )
     })
 
+    const setSystemPrompt = Effect.fn("Session.setSystemPrompt")(function* (input: {
+      sessionID: SessionID
+      system_prompt: string[]
+    }) {
+      yield* patch(input.sessionID, { system_prompt: input.system_prompt }).pipe(Effect.orDie)
+    })
+
     const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
       void sessionID
       return [] as Snapshot.FileDiff[]
@@ -948,6 +959,7 @@ export const layer: Layer.Layer<
       setSummary,
       setShare,
       setWorkspace,
+      setSystemPrompt,
       diff,
       messages,
       children,
