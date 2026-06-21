@@ -51,7 +51,7 @@ import { Truncate } from "@/tool/truncate"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
-import { TestInstance, withTmpdirInstance } from "../fixture/fixture"
+import { TestInstance, withTmpdirInstance, provideInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -533,5 +533,63 @@ test(
       }),
     )
   },
+  15_000,
+)
+
+// ---------------------------------------------------------------------------
+// Restart survival test
+//
+// The frozenSystemPrompts map lives in process memory and is lost on restart.
+// After a restart, the next LLM call for an existing session rebuilds the
+// system prompt from current disk state — breaking the provider KV cache.
+//
+// We test this by verifying that the system prompt used during turn 1 is
+// persisted to the database. A restarted process would load it from there
+// rather than recomputing it. Without persistence the check fails.
+// ---------------------------------------------------------------------------
+
+/**
+ * After turn 1 the system prompt for the session must be stored in the
+ * database so a restarted process can reload it rather than recomputing from
+ * current disk state.
+ *
+ * Currently FAILS because SessionPrompt only keeps the frozen system prompt
+ * in the in-memory frozenSystemPrompts Map — nothing is written to the DB,
+ * so Session.Info has no system_prompt field.
+ */
+it.instance(
+  "system prompt is persisted to the database after the first LLM turn",
+  () =>
+    Effect.gen(function* () {
+      const { directory: dir } = yield* TestInstance
+      const llm = yield* TestLLMServer
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      const config = yield* Config.Service
+
+      yield* writeText(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({ $schema: "https://opencode.ai/config.json", ...providerCfg(llm.url) }),
+      )
+      yield* writeText(path.join(dir, "AGENTS.md"), "# Rules\n\nPOLICY: always use semicolons")
+      yield* config.get()
+
+      const chat = yield* sessions.create({ title: "Restart Persistence Test" })
+      yield* sendUserMessage(chat.id, "first message")
+      yield* llm.text("response one")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const inputs = yield* llm.inputs
+      const sys1 = systemContent(chatInputs(inputs)[0])
+      expect(sys1).toContain("always use semicolons")
+
+      // After the first turn the system prompt must be persisted on the
+      // session row so a restarted process can recover it.
+      // Currently FAILS: no system_prompt field exists on Session.Info.
+      const saved = yield* sessions.get(chat.id).pipe(Effect.orDie)
+      expect((saved as any).system_prompt).toBeDefined()
+      expect((saved as any).system_prompt).toContain("always use semicolons")
+    }),
+  { config: {} },
   15_000,
 )
