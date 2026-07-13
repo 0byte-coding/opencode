@@ -16,6 +16,8 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { ListToolsTool, ID as ListToolsID } from "./list_tools"
+import { CallToolTool, ID as CallToolID } from "./call_tool"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -112,6 +114,14 @@ const layer = Layer.effect(
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
+
+    // `list_tools`/`call_tool` dispatch against every other registered tool. Their
+    // targets aren't known until the rest of this closure builds `custom`/`tool`
+    // below, so they read `dynamicTargets` lazily through this getter — by the time
+    // either tool actually executes, the assignment further down has already run.
+    let dynamicTargets: Tool.Def[] = []
+    const listTools = yield* ListToolsTool(() => dynamicTargets)
+    const callTool = yield* CallToolTool(() => dynamicTargets)
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -218,29 +228,40 @@ const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          listTools: Tool.init(listTools),
+          callTool: Tool.init(callTool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
+
+        const otherTools: Tool.Def[] = [
+          ...(questionEnabled ? [tool.question] : []),
+          tool.shell,
+          tool.read,
+          tool.glob,
+          tool.grep,
+          tool.edit,
+          tool.write,
+          tool.task,
+          tool.fetch,
+          tool.todo,
+          tool.search,
+          tool.skill,
+          tool.patch,
+          ...(tool.execute ? [tool.execute] : []),
+          ...(flags.experimentalLspTool ? [tool.lsp] : []),
+          ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+        ]
+        // `call_tool`/`list_tools` can dispatch to any of these plus whatever
+        // plugins register, regardless of whether dynamic tool mode hides them
+        // from the LLM's tool list below.
+        dynamicTargets = [...otherTools, ...custom]
 
         return {
           custom,
           builtin: [
             tool.invalid,
-            ...(questionEnabled ? [tool.question] : []),
-            tool.shell,
-            tool.read,
-            tool.glob,
-            tool.grep,
-            tool.edit,
-            tool.write,
-            tool.task,
-            tool.fetch,
-            tool.todo,
-            tool.search,
-            tool.skill,
-            tool.patch,
-            ...(tool.execute ? [tool.execute] : []),
-            ...(flags.experimentalLspTool ? [tool.lsp] : []),
-            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            ...otherTools,
+            ...(flags.experimentalDynamicTools ? [tool.listTools, tool.callTool] : []),
           ],
           task: tool.task,
           read: tool.read,
@@ -285,6 +306,14 @@ const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
+        // Dynamic tool mode collapses the LLM-facing tool list down to just the
+        // discovery/dispatch pair (plus the always-present `invalid` fallback).
+        // Every other registered tool — builtin or plugin — stays reachable
+        // through `call_tool` instead of appearing directly here.
+        if (flags.experimentalDynamicTools) {
+          return tool.id === InvalidTool.id || tool.id === ListToolsID || tool.id === CallToolID
+        }
+
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }
@@ -297,9 +326,10 @@ const layer = Layer.effect(
         return true
       })
 
-      const codeModeDescription = filtered.some((tool) => tool.id === "execute")
-        ? yield* describeCodeMode(input)
-        : undefined
+      const codeModeDescription =
+        !flags.experimentalDynamicTools && filtered.some((tool) => tool.id === "execute")
+          ? yield* describeCodeMode(input)
+          : undefined
       const visible = filtered.filter((tool) => tool.id !== "execute" || codeModeDescription)
 
       return yield* Effect.forEach(
