@@ -77,6 +77,15 @@ async function context(): Promise<Tool.Context> {
   }
 }
 
+async function writeSkill(directory: string, name: string, description: string) {
+  const dir = path.join(directory, ".opencode", "skill", name)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(
+    path.join(dir, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n\nBody for ${name}.\n`,
+  )
+}
+
 afterEach(async () => {
   await disposeAllInstances()
 })
@@ -141,6 +150,27 @@ describe("tool.registry dynamic tools", () => {
       expect(names).not.toContain("list_tools")
       expect(names).not.toContain("call_tool")
       expect(names).not.toContain("invalid")
+      // The generic `skill` wrapper is hidden once individual skills are listed
+      // directly, so there's exactly one obvious way to call a given skill.
+      expect(names).not.toContain("skill")
+    }),
+  )
+
+  withDynamicTools.instance("call_tool still dispatches through the generic skill tool by name+args", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeSkill(test.directory, "generic-dispatch-skill", "Used to test fallback."))
+
+      const registry = yield* ToolRegistry.Service
+      const callTool = (yield* registry.all()).find((tool) => tool.id === "call_tool")
+      if (!callTool) throw new Error("call_tool was not registered")
+
+      const result = yield* callTool.execute(
+        { name: "skill", args: { name: "generic-dispatch-skill" } },
+        yield* Effect.promise(context),
+      )
+
+      expect(result.output).toContain("generic-dispatch-skill")
     }),
   )
 
@@ -189,7 +219,7 @@ describe("tool.registry dynamic tools", () => {
 
       const result = yield* callTool.execute({ name: "does_not_exist" }, yield* Effect.promise(context))
 
-      expect(result.output).toContain('no tool named "does_not_exist"')
+      expect(result.output).toContain('no tool or skill named "does_not_exist"')
     }),
   )
 
@@ -202,7 +232,74 @@ describe("tool.registry dynamic tools", () => {
 
       const result = yield* callTool.execute({ name: "call_tool" }, yield* Effect.promise(context))
 
-      expect(result.output).toContain('no tool named "call_tool"')
+      expect(result.output).toContain('no tool or skill named "call_tool"')
+    }),
+  )
+
+  withDynamicTools.instance("list_tools includes skills alongside tools and discovers new skills live", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const registry = yield* ToolRegistry.Service
+      const listTools = (yield* registry.all()).find((tool) => tool.id === "list_tools")
+      if (!listTools) throw new Error("list_tools was not registered")
+
+      const before = JSON.parse(
+        (yield* listTools.execute({}, yield* Effect.promise(context))).output,
+      ) as Array<{ name: string; kind: string }>
+      expect(before.find((item) => item.name === "dynamic-test-skill")).toBeUndefined()
+
+      // Adding a skill mid-session (no restart, no registry rebuild) must show up
+      // on the very next list_tools call — this is the whole point of reload().
+      yield* Effect.promise(() => writeSkill(test.directory, "dynamic-test-skill", "A skill added mid-session."))
+
+      const after = JSON.parse(
+        (yield* listTools.execute({}, yield* Effect.promise(context))).output,
+      ) as Array<{ name: string; kind: string }>
+      const found = after.find((item) => item.name === "dynamic-test-skill")
+      expect(found).toBeDefined()
+      expect(found?.kind).toBe("skill")
+    }),
+  )
+
+  withDynamicTools.instance("list_tools search filters by name and description substring", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeSkill(test.directory, "rocket-launch", "Launches rockets into orbit."))
+
+      const registry = yield* ToolRegistry.Service
+      const listTools = (yield* registry.all()).find((tool) => tool.id === "list_tools")
+      if (!listTools) throw new Error("list_tools was not registered")
+
+      const byName = JSON.parse(
+        (yield* listTools.execute({ search: "rocket" }, yield* Effect.promise(context))).output,
+      ) as Array<{ name: string }>
+      expect(byName.map((item) => item.name)).toEqual(["rocket-launch"])
+
+      const byDescription = JSON.parse(
+        (yield* listTools.execute({ search: "orbit" }, yield* Effect.promise(context))).output,
+      ) as Array<{ name: string }>
+      expect(byDescription.map((item) => item.name)).toEqual(["rocket-launch"])
+
+      const noMatch = JSON.parse(
+        (yield* listTools.execute({ search: "definitely-not-a-real-tool" }, yield* Effect.promise(context))).output,
+      ) as Array<{ name: string }>
+      expect(noMatch).toEqual([])
+    }),
+  )
+
+  withDynamicTools.instance("call_tool dispatches directly to a skill by name", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeSkill(test.directory, "dynamic-dispatch-skill", "Used to test dispatch."))
+
+      const registry = yield* ToolRegistry.Service
+      const callTool = (yield* registry.all()).find((tool) => tool.id === "call_tool")
+      if (!callTool) throw new Error("call_tool was not registered")
+
+      const result = yield* callTool.execute({ name: "dynamic-dispatch-skill" }, yield* Effect.promise(context))
+
+      expect(result.output).toContain("dynamic-dispatch-skill")
+      expect(result.output).toContain("Body for dynamic-dispatch-skill.")
     }),
   )
 

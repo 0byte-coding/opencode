@@ -100,6 +100,10 @@ export interface Interface {
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  // Forces the next `get`/`require`/`all`/`available` call to re-scan disk instead
+  // of reusing the snapshot taken at instance start. Callers that need live skill
+  // discovery (e.g. dynamic tool listing) should call this before reading.
+  readonly reload: () => Effect.Effect<void>
 }
 
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
@@ -314,7 +318,12 @@ const layer = Layer.effect(
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
-    return Service.of({ get, require, all, dirs, available })
+    const reload = Effect.fn("Skill.reload")(function* () {
+      yield* InstanceState.invalidate(discovered)
+      yield* InstanceState.invalidate(state)
+    })
+
+    return Service.of({ get, require, all, dirs, available, reload })
   }),
 )
 

@@ -1255,7 +1255,9 @@ const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
+              // Dynamic tool mode discovers skills live through list_tools instead
+              // of baking a static catalog into the system prompt at session start.
+              flags.experimentalDynamicTools ? Effect.succeed(undefined) : sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
